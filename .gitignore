@@ -122,3 +122,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Data directories.
+data/
+kaggle_data/
+
+# Profiler output.
+*.prof
