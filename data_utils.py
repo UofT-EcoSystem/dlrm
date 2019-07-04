@@ -408,6 +408,7 @@ def getKaggleCriteoAdData(datafile="", o_filename=""):
 
         print("\nSaved kaggle_day_{0}.npz!".format(split))
     else:
+        split -= 1
         print("Using existing %skaggle_day_*.npz files" % str(d_path))
 
     processKaggleCriteoAdData(split, d_path)
