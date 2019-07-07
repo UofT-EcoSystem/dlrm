@@ -28,6 +28,54 @@ import numpy as np
 import torch
 from numpy import random as ra
 
+from functools import partial
+from torch.multiprocessing import Pool
+from tqdm import tqdm
+from numba import jit, prange
+
+@jit(nopython=True, nogil=True, parallel=True)
+def _prepare_batches(nbatches, mini_batch_size, data_size, X_int, y, n_emb, X_cat):
+    """ X_int, y, X_cat are read-only.
+    """
+    lX = np.zeros((nbatches, mini_batch_size, X_int.shape[1]), dtype=np.float32)
+    lT = np.zeros((nbatches, mini_batch_size, 1), dtype=np.float32)
+    lS_indices = np.zeros((nbatches, n_emb, mini_batch_size), dtype=np.int64)
+    lS_offsets = np.zeros((nbatches, n_emb, mini_batch_size), dtype=np.int64)
+
+    for j in prange(nbatches):
+        n = min(mini_batch_size, data_size - (j * mini_batch_size))
+        idx_start = j * mini_batch_size
+        # dense feature
+        lX[j, :n] = X_int[idx_start : idx_start + n].astype(np.float32)
+        # Training targets - ouptuts
+        lT[j, :n] = y[idx_start : idx_start + n].reshape(-1, 1).astype(np.float32)
+        # sparse feature (sparse indices)
+        lS_indices[j, :, :n] = X_cat[idx_start:idx_start+n, :].T.astype(np.int64)
+        # Criteo Kaggle data it is 1 because data is categorical
+        for emb_idx in prange(n_emb):
+            lS_offsets[j, emb_idx, :n] = np.arange(n)
+
+    return lX, lT, lS_indices, lS_offsets
+
+def prepare_batches(nbatches, mini_batch_size, data_size, X_int, y, n_emb, X_cat):
+    lX_np, lT_np, lS_indices_np, lS_offsets_np = _prepare_batches(
+        nbatches, mini_batch_size, data_size, X_int, y, n_emb, X_cat)
+    lX, lT, lS_indices, lS_offsets = [], [], [], []
+    for j in tqdm(range(nbatches)):
+        if j == nbatches - 1:
+            n = min(mini_batch_size, data_size - (j * mini_batch_size))
+            X, T, S_indices, S_offsets = (lX_np[j, :n], lT_np[j, :n],
+                                          lS_indices_np[j, :, :n],
+                                          lS_offsets_np[j, :, :n])
+        else:
+            X, T, S_indices, S_offsets = (lX_np[j], lT_np[j], lS_indices_np[j],
+                                          lS_offsets_np[j])
+
+        lX.append(torch.tensor(X))
+        lT.append(torch.tensor(T))
+        lS_indices.append(torch.tensor(S_indices))
+        lS_offsets.append(torch.tensor(S_offsets))
+    return lX, lT, lS_indices, lS_offsets
 
 # Kaggle Display Advertising Challenge Dataset
 # dataset (str): name of dataset (Kaggle or Terabyte)
@@ -90,50 +138,9 @@ def read_dataset(
         else:
             print("Total number of batches %d" % nbatches)
 
-        # training data main loop
-        for j in range(0, nbatches):
-            # number of data points in a batch
-            print("Reading in batch: %d / %d" % (j + 1, nbatches), end="\r")
-            n = min(mini_batch_size, data_size - (j * mini_batch_size))
-            # dense feature
-            idx_start = j * mini_batch_size
-            # WARNING: X_int_train is a PyTorch tensor
-            lX.append(
-                torch.tensor(
-                    (X_int_train[idx_start : (idx_start + n)])
-                    .numpy()
-                    .astype(np.float32)
-                )
-            )
-            # Training targets - ouptuts
-            # WARNING: y_train is a PyTorch tensor
-            lT.append(
-                torch.tensor(
-                    (y_train[idx_start : idx_start + n])
-                    .numpy()
-                    .reshape(-1, 1)
-                    .astype(np.float32)
-                )
-            )
-            # sparse feature (sparse indices)
-            lS_emb_indices = []
-            # for each embedding generate a list of n lookups,
-            # where each lookup is composed of multiple sparse indices
-            for size in range(n_emb):
-                lS_batch_indices = []
-                for _b in range(n):
-                    # WARNING: X_cat_train is a PyTorch tensor
-                    # store lengths and indices
-                    lS_batch_indices += (
-                        (X_cat_train[idx_start + _b][size].view(-1))
-                        .numpy()
-                        .astype(np.int64)
-                    ).tolist()
-                lS_emb_indices.append(torch.tensor(lS_batch_indices))
-            lS_indices.append(lS_emb_indices)
-            # Criteo Kaggle data it is 1 because data is categorical
-            lS_offsets.append([torch.tensor(list(range(n))) for _ in range(n_emb)])
-        print("\n")
+        lX, lT, lS_indices, lS_offsets = prepare_batches(
+            nbatches, mini_batch_size, data_size, X_int_train.numpy(),
+            y_train.numpy(), n_emb, X_cat_train.numpy())
 
     # adjust parameters
     lX_test = []
@@ -153,46 +160,9 @@ def read_dataset(
     else:
         print("Total number of batches %d" % nbatches_test)
 
-    # testing data main loop
-    for j in range(0, nbatches_test):
-        # number of data points in a batch
-        print("Reading in batch: %d / %d" % (j + 1, nbatches_test), end="\r")
-        n = min(mini_batch_size, data_size - (j * mini_batch_size))
-        # dense feature
-        idx_start = j * mini_batch_size
-        # WARNING: X_int_test is a PyTorch tensor
-        lX_test.append(
-            torch.tensor(
-                (X_int_test[idx_start : (idx_start + n)]).numpy().astype(np.float32)
-            )
-        )
-        # Training targets - ouptuts
-        # WARNING: y_test is a PyTorch tensor
-        lT_test.append(
-            torch.tensor(
-                (y_test[idx_start : idx_start + n])
-                .numpy()
-                .reshape(-1, 1)
-                .astype(np.float32)
-            )
-        )
-        # sparse feature (sparse indices)
-        lS_emb_indices = []
-        # for each embedding generate a list of n lookups,
-        # where each lookup is composed of multiple sparse indices
-        for size in range(n_emb):
-            lS_batch_indices = []
-            for _b in range(n):
-                # WARNING: X_cat_test is a PyTorch tensor
-                # store lengths and indices
-                lS_batch_indices += (
-                    (X_cat_test[idx_start + _b][size].view(-1)).numpy().astype(np.int64)
-                ).tolist()
-            lS_emb_indices.append(torch.tensor(lS_batch_indices))
-        lS_indices_test.append(lS_emb_indices)
-        # Criteo Kaggle data it is 1 because data is categorical
-        lS_offsets_test.append([torch.tensor(list(range(n))) for _ in range(n_emb)])
-    print("\n")
+    lX_test, lT_test, lS_indices_test, lS_offsets_test = prepare_batches(
+        nbatches_test, mini_batch_size, data_size, X_int_test.numpy(),
+        y_test.numpy(), n_emb, X_cat_test.numpy())
 
     if not inference_only:
         return (
