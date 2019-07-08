@@ -77,6 +77,38 @@ def prepare_batches(nbatches, mini_batch_size, data_size, X_int, y, n_emb, X_cat
         lS_offsets.append(torch.tensor(S_offsets))
     return lX, lT, lS_indices, lS_offsets
 
+def embedding_index_remap(base, targets):
+    """ Assuming base and targets are (sample size, # of embeddings) numpy
+    arrays. Use base to estimate the distribution of embedding indices, then
+    transform targets.
+    """
+    num_embs = base.shape[1]
+    res = [np.zeros(target.shape, dtype=target.dtype) for target in targets]
+    for i in range(num_embs):
+        print('Processing the {}-th embedding:'.format(i))
+        base_indices, counts = np.unique(base[:, i], return_counts=True)
+        all_indices = np.unique(
+            np.concatenate(
+                [np.unique(target[:, i]) for target in targets]
+            )
+        )
+        # Fill in the missing idx.
+        missing_indices = np.setdiff1d(all_indices, base_indices,
+                                       assume_unique=True)
+        indices = np.concatenate([base_indices, missing_indices])
+        counts = np.concatenate([counts, np.zeros(missing_indices.shape, dtype=counts.dtype)])
+        # Generate the new_idx from most often to least often
+        idx_counts = sorted(zip(indices, counts), key=lambda kv: kv[1], reverse=True)
+        mapping = np.zeros((len(idx_counts),), dtype=np.int64)
+        for new_idx, (old_idx, count) in tqdm(enumerate(idx_counts)):
+            mapping[old_idx] = new_idx
+        # Remap the target:
+        for j, target in enumerate(targets):
+            print('-- Remap the {}-th target'.format(j))
+            res[j][:, i] = mapping[target[:, i]]
+
+    return res
+
 # Kaggle Display Advertising Challenge Dataset
 # dataset (str): name of dataset (Kaggle or Terabyte)
 # randomize (str): determines randomization scheme
@@ -118,6 +150,12 @@ def read_dataset(
     m_den = X_int_train.shape[1]
     n_emb = len(counts)
     print("Sparse features = %d, Dense features = %d" % (n_emb, m_den))
+
+    # Remap embedding indices.
+    X_cat_train_remap, X_cat_val_remap, X_cat_test_remap = embedding_index_remap(
+        X_cat_train.numpy(),
+        [X_cat_train.numpy(), X_cat_val.numpy(), X_cat_test.numpy()]
+    )
 
     # adjust parameters
     if not inference_only:

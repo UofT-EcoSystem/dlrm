@@ -16,12 +16,12 @@ build=1
 cpu=1
 gpu=1
 pt=1
-c2=1
+c2=0
 
 ncores=28 #12 #6
 nsockets="0"
 
-ngpus="1 2 4 8"
+ngpus="1" #"1 2 4 8"
 
 numa_cmd="numactl --physcpubind=0-$((ncores-1)) -m $nsockets" #run on one socket, without HT
 dlrm_pt_bin="python dlrm_s_pytorch.py"
@@ -34,8 +34,8 @@ rand_seed=727
 c2_net="async_scheduling"
 
 #Model param
-mb_size=2048 #1024 #512 #256
-nbatches=1000 #500 #100
+mb_size=16 #2048 #1024 #512 #256
+nbatches=100000  #1000 #500 #100
 bot_mlp="512-512-64"
 top_mlp="1024-1024-1024-1"
 emb_size=64
